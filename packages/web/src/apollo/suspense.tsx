@@ -3,68 +3,70 @@
  * This is a lift and shift of the original ApolloProvider
  * but with suspense specific bits. Look for @MARK to find bits I've changed
  *
- * Done this way, to avoid making changes breaking on main.
+ * Done this way, to avoid making changes breaking on main, due to the experimental-nextjs import
+ * Eventually we will have one ApolloProvider, not multiple.
  */
+'use client'
+import React, { useContext } from 'react'
 
 import type {
   ApolloCache,
   ApolloClientOptions,
+  ApolloLink,
+  HttpOptions,
+  InMemoryCacheConfig,
   setLogVerbosity,
 } from '@apollo/client'
-import * as apolloClient from '@apollo/client'
-import { setContext } from '@apollo/client/link/context'
+import { setLogVerbosity as apolloSetLogVerbosity } from '@apollo/client/core/index.js'
 import {
-  ApolloNextAppProvider,
-  NextSSRApolloClient,
-  NextSSRInMemoryCache,
-  useSuspenseQuery,
-} from '@apollo/experimental-nextjs-app-support/ssr'
-import { print } from 'graphql/language/printer'
-
-// Note: Importing directly from `apollo/client` doesn't work properly in Storybook.
-const {
-  ApolloLink,
-  HttpLink,
-  useSubscription,
   useMutation,
-  setLogVerbosity: apolloSetLogVerbosity,
-} = apolloClient
+  useSubscription,
+  useBackgroundQuery,
+  useQuery,
+  useReadQuery,
+  useSuspenseQuery,
+} from '@apollo/client/react/hooks/index.js'
+import {
+  ApolloClient,
+  InMemoryCache,
+  WrapApolloProvider,
+} from '@apollo/client-react-streaming'
+import { buildManualDataTransport } from '@apollo/client-react-streaming/manual-transport'
 
-import { UseAuth, useNoAuth } from '@redwoodjs/auth'
-import './typeOverride'
+import type { UseAuth } from '@redwoodjs/auth'
+import { useNoAuth } from '@redwoodjs/auth'
+import { ServerAuthContext } from '@redwoodjs/auth/dist/AuthProvider/ServerAuthProvider.js'
+import './typeOverride.js'
 
 import {
   FetchConfigProvider,
   useFetchConfig,
-} from '../components/FetchConfigProvider'
-import { GraphQLHooksProvider } from '../components/GraphQLHooksProvider'
+} from '../components/FetchConfigProvider.js'
+import { GraphQLHooksProvider } from '../components/GraphQLHooksProvider.js'
+import { ServerHtmlContext } from '../components/ServerInject.js'
 
-export type ApolloClientCacheConfig = apolloClient.InMemoryCacheConfig
+import type {
+  RedwoodApolloLink,
+  RedwoodApolloLinkFactory,
+  RedwoodApolloLinkName,
+  RedwoodApolloLinks,
+} from './links.js'
+import {
+  createAuthApolloLink,
+  createFinalLink,
+  createHttpLink,
+  createTokenLink,
+  createUpdateDataLink,
+} from './links.js'
 
-export type RedwoodApolloLinkName =
-  | 'withToken'
-  | 'authMiddleware'
-  | 'updateDataApolloLink'
-  | 'httpLink'
+export type ApolloClientCacheConfig = InMemoryCacheConfig
 
-export type RedwoodApolloLink<
-  Name extends RedwoodApolloLinkName,
-  Link extends apolloClient.ApolloLink = apolloClient.ApolloLink
-> = {
-  name: Name
-  link: Link
+export type {
+  RedwoodApolloLink,
+  RedwoodApolloLinkFactory,
+  RedwoodApolloLinkName,
+  RedwoodApolloLinks,
 }
-
-export type RedwoodApolloLinks = [
-  RedwoodApolloLink<'withToken'>,
-  RedwoodApolloLink<'authMiddleware'>,
-  RedwoodApolloLink<'updateDataApolloLink'>,
-  RedwoodApolloLink<'httpLink', apolloClient.HttpLink>
-]
-
-export type RedwoodApolloLinkFactory = (
-  links: RedwoodApolloLinks
-) => apolloClient.ApolloLink
 
 export type GraphQLClientConfigProp = Omit<
   ApolloClientOptions<unknown>,
@@ -88,7 +90,7 @@ export type GraphQLClientConfigProp = Omit<
    * }}>
    * ```
    */
-  httpLinkConfig?: apolloClient.HttpOptions
+  httpLinkConfig?: HttpOptions
   /**
    * Extend or overwrite `RedwoodApolloProvider`'s Apollo Link.
    *
@@ -112,8 +114,18 @@ export type GraphQLClientConfigProp = Omit<
    * - your function should return a single link (e.g., using `ApolloLink.from`; see https://www.apollographql.com/docs/react/api/link/introduction/#additive-composition)
    * - the `HttpLink` should come last (https://www.apollographql.com/docs/react/api/link/introduction/#the-terminating-link)
    */
-  link?: apolloClient.ApolloLink | RedwoodApolloLinkFactory
+  link?: ApolloLink | RedwoodApolloLinkFactory
 }
+
+// Based on the code from here:
+// https://github.com/apollographql/apollo-client-nextjs/blob/0aca8251409de7b729f7caa9c14492b0044e0d21/integration-test/vite-streaming/src/Transport.tsx#L19
+const WrappedApolloProvider = WrapApolloProvider(
+  buildManualDataTransport({
+    useInsertHtml() {
+      return React.useContext(ServerHtmlContext)
+    },
+  }),
+)
 
 const ApolloProviderWithFetchConfig: React.FunctionComponent<{
   config: Omit<GraphQLClientConfigProp, 'cacheConfig' | 'cache'> & {
@@ -122,48 +134,16 @@ const ApolloProviderWithFetchConfig: React.FunctionComponent<{
   useAuth?: UseAuth
   logLevel: ReturnType<typeof setLogVerbosity>
   children: React.ReactNode
-}> = ({ config, children, useAuth = useNoAuth, logLevel }) => {
+}> = ({ config, children, logLevel, useAuth = useNoAuth }) => {
   // Should they run into it, this helps users with the "Cannot render cell; GraphQL success but data is null" error.
   // See https://github.com/redwoodjs/redwood/issues/2473.
   apolloSetLogVerbosity(logLevel)
 
-  // Here we're using Apollo Link to customize Apollo Client's data flow.
-  // Although we're sending conventional HTTP-based requests and could just pass `uri` instead of `link`,
-  // we need to fetch a new token on every request, making middleware a good fit for this.
-  //
-  // See https://www.apollographql.com/docs/react/api/link/introduction.
+  const { uri, headers } = useFetchConfig()
   const { getToken, type: authProviderType } = useAuth()
+  const isDev = process.env.NODE_ENV === 'development'
 
-  // `updateDataApolloLink` keeps track of the most recent req/res data so they can be passed to
-  // any errors passed up to an error boundary.
-  const data = {
-    mostRecentRequest: undefined,
-    mostRecentResponse: undefined,
-  } as any
-
-  const updateDataApolloLink = new ApolloLink((operation, forward) => {
-    const { operationName, query, variables } = operation
-
-    data.mostRecentRequest = {}
-    data.mostRecentRequest.operationName = operationName
-    data.mostRecentRequest.operationKind = query?.kind.toString()
-    data.mostRecentRequest.variables = variables
-    data.mostRecentRequest.query = query && print(operation.query)
-
-    return forward(operation).map((result) => {
-      data.mostRecentResponse = result
-
-      return result
-    })
-  })
-
-  const withToken = setContext(async () => {
-    const token = await getToken()
-
-    return { token }
-  })
-
-  const { headers, uri } = useFetchConfig()
+  const serverAuthState = useContext(ServerAuthContext)
 
   const getGraphqlUrl = () => {
     // @NOTE: This comes from packages/vite/src/streaming/registerGlobals.ts
@@ -177,97 +157,44 @@ const ApolloProviderWithFetchConfig: React.FunctionComponent<{
       : uri
   }
 
-  const authMiddleware = new ApolloLink((operation, forward) => {
-    const { token } = operation.getContext()
+  const { httpLinkConfig, link: userPassedLink, ...otherConfig } = config ?? {}
 
-    // Only add auth headers when there's a token. `token` is `null` when `!isAuthenticated`.
-    const authHeaders = token
-      ? {
-          'auth-provider': authProviderType,
-          authorization: `Bearer ${token}`,
-        }
-      : {}
-
-    operation.setContext(() => ({
-      headers: {
-        ...operation.getContext().headers,
-        ...headers,
-        // Duped auth headers, because we may remove the `FetchConfigProvider` at a later date.
-        ...authHeaders,
-      },
-    }))
-
-    return forward(operation)
-  })
-
-  const { httpLinkConfig, link: redwoodApolloLink, ...rest } = config ?? {}
-
-  // A terminating link. Apollo Client uses this to send GraphQL operations to a server over HTTP.
-  // See https://www.apollographql.com/docs/react/api/link/introduction/#the-terminating-link.
-  const httpLink = new HttpLink({ uri, ...httpLinkConfig })
-
-  // The order here is important. The last link *must* be a terminating link like HttpLink.
+  // We use this object, because that's the shape of what we pass to the config.link factory
   const redwoodApolloLinks: RedwoodApolloLinks = [
-    { name: 'withToken', link: withToken },
-    { name: 'authMiddleware', link: authMiddleware },
-    { name: 'updateDataApolloLink', link: updateDataApolloLink },
-    { name: 'httpLink', link: httpLink },
-  ]
-
-  let link = redwoodApolloLink
-
-  link ??= ApolloLink.from(redwoodApolloLinks.map((l) => l.link))
-
-  if (typeof link === 'function') {
-    link = link(redwoodApolloLinks)
-  }
-
-  const extendErrorAndRethrow = (error: any, _errorInfo: React.ErrorInfo) => {
-    error['mostRecentRequest'] = data.mostRecentRequest
-    error['mostRecentResponse'] = data.mostRecentResponse
-    throw error
-  }
+    // @MARK REMOVE: We will not need these for cookie based auth ~~~~
+    { name: 'withToken', link: createTokenLink(getToken) },
+    {
+      name: 'authMiddleware',
+      link: createAuthApolloLink(authProviderType, headers),
+    },
+    // ~~~~ @END REMOVE ~~~~
+    isDev && { name: 'enhanceErrorLink', link: createUpdateDataLink() },
+    {
+      name: 'httpLink',
+      link: createHttpLink(
+        getGraphqlUrl(),
+        httpLinkConfig,
+        serverAuthState?.cookieHeader,
+      ),
+    },
+  ].filter((link): link is RedwoodApolloLinks[number] => !!link)
 
   function makeClient() {
-    const httpLink = new HttpLink({
-      // @MARK: we have to construct the absoltue url for SSR
-      uri: getGraphqlUrl(),
-      // you can disable result caching here if you want to
-      // (this does not work if you are rendering your page with `export const dynamic = "force-static"`)
-      fetchOptions: { cache: 'no-store' },
-    })
-
     // @MARK use special Apollo client
-    return new NextSSRApolloClient({
-      link: httpLink,
-      ...rest,
+    return new ApolloClient({
+      link: createFinalLink({
+        userConfiguredLink: userPassedLink,
+        defaultLinks: redwoodApolloLinks,
+      }),
+      ...otherConfig,
     })
   }
 
   return (
-    <ApolloNextAppProvider makeClient={makeClient}>
-      <ErrorBoundary onError={extendErrorAndRethrow}>{children}</ErrorBoundary>
-    </ApolloNextAppProvider>
+    <WrappedApolloProvider makeClient={makeClient}>
+      {children}
+    </WrappedApolloProvider>
   )
-}
-
-type ComponentDidCatch = React.ComponentLifecycle<any, any>['componentDidCatch']
-
-interface ErrorBoundaryProps {
-  error?: unknown
-  onError: NonNullable<ComponentDidCatch>
-  children: React.ReactNode
-}
-
-class ErrorBoundary extends React.Component<ErrorBoundaryProps> {
-  componentDidCatch(...args: Parameters<NonNullable<ComponentDidCatch>>) {
-    this.setState({})
-    this.props.onError(...args)
-  }
-
-  render() {
-    return this.props.children
-  }
 }
 
 export const RedwoodApolloProvider: React.FunctionComponent<{
@@ -286,8 +213,8 @@ export const RedwoodApolloProvider: React.FunctionComponent<{
   const { cacheConfig, ...config } = graphQLClientConfig ?? {}
 
   // @MARK we need this special cache
-  const cache = new NextSSRInMemoryCache(cacheConfig).restore(
-    globalThis?.__REDWOOD__APOLLO_STATE ?? {}
+  const cache = new InMemoryCache(cacheConfig).restore(
+    globalThis?.__REDWOOD__APOLLO_STATE ?? {},
   )
 
   return (
@@ -299,10 +226,12 @@ export const RedwoodApolloProvider: React.FunctionComponent<{
         logLevel={logLevel}
       >
         <GraphQLHooksProvider
-          // @MARK 👇 swapped useQuery for useSuspense query here
-          useQuery={useSuspenseQuery}
+          useQuery={useQuery}
           useMutation={useMutation}
           useSubscription={useSubscription}
+          useSuspenseQuery={useSuspenseQuery}
+          useBackgroundQuery={useBackgroundQuery}
+          useReadQuery={useReadQuery}
         >
           {children}
         </GraphQLHooksProvider>

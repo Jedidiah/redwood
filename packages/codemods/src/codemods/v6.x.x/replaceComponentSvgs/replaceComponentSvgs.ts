@@ -17,7 +17,7 @@ async function convertSvgToReactComponent(
   svgFilePath: string,
   outputPath: string,
   componentName: string,
-  typescript: boolean
+  typescript: boolean,
 ) {
   const svgContents = await fs.readFile(svgFilePath, 'utf-8')
 
@@ -30,7 +30,7 @@ async function convertSvgToReactComponent(
     },
     {
       componentName: componentName,
-    }
+    },
   )
 
   await fs.writeFile(outputPath, jsCode)
@@ -49,61 +49,101 @@ export default async function transform(file: FileInfo, api: API) {
   // Find all import declarations with "*.svg" import
   const svgImports = root.find(j.ImportDeclaration).filter((path) => {
     const importPath = path.node.source.value as string
-    return importPath.includes('.svg')
+    return importPath.endsWith('.svg')
   })
 
-  const svgsToConvert: Array<{
+  // This is if you directly export from svg:
+  // e.g. export { default as X } from './X.svg'
+  const svgNamedExports = root.find(j.ExportNamedDeclaration).filter((path) => {
+    const source = path.value.source
+    return Boolean(
+      source &&
+        typeof source.value === 'string' &&
+        source.value.endsWith('.svg'),
+    )
+  })
+
+  const svgsToConvert: {
     filePath: string
     importSourcePath: StringLiteral
-  }> = []
+  }[] = []
 
+  const importOrExportStatementsWithSvg = [
+    ...svgImports.paths(),
+    ...svgNamedExports.paths(),
+  ]
   // Process each import declaration
-  svgImports.forEach((importDeclaration) => {
-    const importSpecifiers = importDeclaration.node.specifiers
+  importOrExportStatementsWithSvg.forEach((declaration) => {
+    const specifiers = declaration.node.specifiers
 
     // Process each import specifier
-    importSpecifiers?.forEach((importSpecifier) => {
-      if (importSpecifier.type === 'ImportDefaultSpecifier') {
-        if (!importSpecifier.local) {
+    specifiers?.forEach((specifier) => {
+      // The name of the improted SVG, assigned based on whether you are
+      // importing or exporting directly
+      let svgName = ''
+
+      if (specifier.type === 'ExportSpecifier') {
+        svgName = specifier.exported.name
+      } else if (specifier.type === 'ImportDefaultSpecifier') {
+        if (!specifier.local) {
           // Un-freaking-likely, skip if it happens
           return
         }
 
-        const importName = importSpecifier.local.name
-
-        const importPath = importDeclaration.node.source.value as string
-        const currentFolder = path.dirname(file.path)
-
-        let pathToSvgFile = path.resolve(currentFolder, importPath)
-
-        if (importPath.startsWith('src/')) {
-          pathToSvgFile = importPath.replace('src/', getPaths().web.src + '/')
-        }
-
-        // Find the JSX elements that use the default import specifier
-        const svgsUsedAsComponent = root.findJSXElements(importName)
-
-        svgsUsedAsComponent.forEach(() => {
-          svgsToConvert.push({
-            filePath: pathToSvgFile,
-            importSourcePath: importDeclaration.node.source as StringLiteral, // imports are all strings in this case
-          })
-        })
-
-        const svgsUsedAsRenderProp = root.find(j.JSXExpressionContainer, {
-          expression: {
-            type: 'Identifier',
-            name: importName,
-          },
-        })
-
-        svgsUsedAsRenderProp.forEach(() => {
-          svgsToConvert.push({
-            filePath: pathToSvgFile,
-            importSourcePath: importDeclaration.node.source as StringLiteral, // imports are all strings in this case
-          })
-        })
+        svgName = specifier.local.name
       }
+
+      const sourcePath = declaration.node.source?.value as string
+
+      if (!sourcePath) {
+        // Note sure how this is possible.... but TS tells me to do this
+        // I guess because most export statements don't have a source?
+        return
+      }
+
+      const currentFolder = path.dirname(file.path)
+
+      let pathToSvgFile = path.resolve(currentFolder, sourcePath)
+
+      if (sourcePath.startsWith('src/')) {
+        pathToSvgFile = sourcePath.replace('src/', getPaths().web.src + '/')
+      }
+
+      // Find the JSX elements that use the default import specifier
+      // e,g, <MySvg />
+      const svgsUsedAsComponent = root.findJSXElements(svgName)
+
+      // Used as a render prop
+      // <Component icon={MySvg} />
+      const svgsUsedAsRenderProp = root.find(j.JSXExpressionContainer, {
+        expression: {
+          type: 'Identifier',
+          name: svgName,
+        },
+      })
+
+      // a) exported from another file e.g. export { default as MySvg } from './X.svg'
+      // b) imported from another file e.g. import MySvg from './X.svg', then exported export { MySvg }
+      const svgsReexported = root.find(j.ExportSpecifier).filter((path) => {
+        return (
+          path.value.local?.name === svgName ||
+          path.value.exported.name === svgName
+        )
+      })
+
+      // Concat all of them, and loop over once
+      const selectedSvgs = [
+        ...svgsUsedAsComponent.paths(),
+        ...svgsUsedAsRenderProp.paths(),
+        ...svgsReexported.paths(),
+      ]
+
+      selectedSvgs.forEach(() => {
+        svgsToConvert.push({
+          filePath: pathToSvgFile,
+          importSourcePath: declaration.node.source as StringLiteral, // imports are all strings in this case
+        })
+      })
     })
   })
 
@@ -113,7 +153,7 @@ export default async function transform(file: FileInfo, api: API) {
       svgsToConvert.map(async (svg) => {
         const svgFileNameWithoutExtension = path.basename(
           svg.filePath,
-          path.extname(svg.filePath)
+          path.extname(svg.filePath),
         )
 
         const componentName = pascalcase(svgFileNameWithoutExtension)
@@ -123,7 +163,7 @@ export default async function transform(file: FileInfo, api: API) {
         // The absolute path to the new file
         const outputPath = path.join(
           path.dirname(svg.filePath),
-          `${newFileName}.${isTS ? 'tsx' : 'jsx'}`
+          `${newFileName}.${isTS ? 'tsx' : 'jsx'}`,
         )
 
         try {
@@ -131,11 +171,11 @@ export default async function transform(file: FileInfo, api: API) {
             svg.filePath,
             outputPath,
             componentName,
-            isTS
+            isTS,
           )
         } catch (error: any) {
           console.error(
-            `Error converting ${svg.filePath} to React component: ${error.message}`
+            `Error converting ${svg.filePath} to React component: ${error.message}`,
           )
 
           // Don't proceed if SVGr fails
@@ -147,9 +187,9 @@ export default async function transform(file: FileInfo, api: API) {
         // Use extname, incase ext casing does not match
         svg.importSourcePath.value = svg.importSourcePath.value.replace(
           `${svgFileNameWithoutExtension}${path.extname(svg.filePath)}`,
-          newFileName
+          newFileName,
         )
-      })
+      }),
     )
   }
 

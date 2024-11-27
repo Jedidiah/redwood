@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
-import fs from 'fs'
 import path from 'path'
 
 import { trace, SpanStatusCode } from '@opentelemetry/api'
-import { config } from 'dotenv-defaults'
+import fs from 'fs-extra'
 import { hideBin, Parser } from 'yargs/helpers'
 import yargs from 'yargs/yargs'
 
@@ -14,7 +13,6 @@ import { telemetryMiddleware } from '@redwoodjs/telemetry'
 import * as buildCommand from './commands/build'
 import * as checkCommand from './commands/check'
 import * as consoleCommand from './commands/console'
-import * as dataMigrateCommand from './commands/dataMigrate'
 import * as deployCommand from './commands/deploy'
 import * as destroyCommand from './commands/destroy'
 import * as devCommand from './commands/dev'
@@ -22,18 +20,21 @@ import * as execCommand from './commands/exec'
 import * as experimentalCommand from './commands/experimental'
 import * as generateCommand from './commands/generate'
 import * as infoCommand from './commands/info'
+import * as jobsCommand from './commands/jobs'
 import * as lintCommand from './commands/lint'
 import * as prerenderCommand from './commands/prerender'
 import * as prismaCommand from './commands/prisma'
 import * as recordCommand from './commands/record'
 import * as serveCommand from './commands/serve'
 import * as setupCommand from './commands/setup'
+import * as studioCommand from './commands/studio'
 import * as testCommand from './commands/test'
 import * as tstojsCommand from './commands/ts-to-js'
 import * as typeCheckCommand from './commands/type-check'
 import * as upgradeCommand from './commands/upgrade'
-import { getPaths, findUp } from './lib'
+import { findUp } from './lib'
 import { exitWithError } from './lib/exit'
+import { loadEnvFiles } from './lib/loadEnvFiles'
 import * as updateCheck from './lib/updateCheck'
 import { loadPlugins } from './plugin'
 import { startTelemetry, shutdownTelemetry } from './telemetry/index'
@@ -88,7 +89,7 @@ try {
 
     if (!redwoodTOMLPath) {
       throw new Error(
-        `Couldn't find up a "redwood.toml" file from ${process.cwd()}`
+        `Couldn't find up a "redwood.toml" file from ${process.cwd()}`,
       )
     }
 
@@ -101,15 +102,10 @@ try {
 
 process.env.RWJS_CWD = cwd
 
-// # Load .env, .env.defaults
+// Load .env.* files.
 //
 // This should be done as early as possible, and the earliest we can do it is after setting `cwd`.
-
-config({
-  path: path.join(getPaths().base, '.env'),
-  defaults: path.join(getPaths().base, '.env.defaults'),
-  multiline: true,
-})
+loadEnvFiles()
 
 async function main() {
   // Start telemetry if it hasn't been disabled
@@ -133,6 +129,8 @@ async function main() {
       recordTelemetryAttributes({ command: '--help' })
     }
 
+    // FIXME: There's currently a BIG RED BOX on exiting feServer
+    // Is yargs or the RW cli not passing SigInt on to the child process?
     try {
       // Run the command via yargs
       await runYargs()
@@ -168,15 +166,26 @@ async function runYargs() {
         // Likewise for `telemetry`.
         (argv) => {
           delete argv.cwd
+          delete argv.addEnvFiles
+          delete argv['load-env-files']
           delete argv.telemetry
         },
         telemetry && telemetryMiddleware,
         updateCheck.isEnabled() && updateCheck.updateCheckMiddleware,
-      ].filter(Boolean)
+      ].filter(Boolean),
     )
     .option('cwd', {
       describe: 'Working directory to use (where `redwood.toml` is located)',
     })
+    .option('load-env-files', {
+      describe:
+        'Load additional .env files. Values defined in files specified later override earlier ones.',
+      array: true,
+    })
+    .example(
+      'yarn rw exec migrateUsers --load-env-files stripe nakama',
+      "Run a script, also loading env vars from '.env.stripe' and '.env.nakama'",
+    )
     .option('telemetry', {
       describe: 'Whether to send anonymous usage telemetry to RedwoodJS',
       boolean: true,
@@ -184,17 +193,17 @@ async function runYargs() {
     })
     .example(
       'yarn rw g page home /',
-      "\"Create a page component named 'Home' at path '/'\""
+      "Create a page component named 'Home' at path '/'",
     )
     .demandCommand()
     .strict()
     .exitProcess(false)
+    .alias('h', 'help')
 
     // Commands (Built in or pre-plugin support)
     .command(buildCommand)
     .command(checkCommand)
     .command(consoleCommand)
-    .command(dataMigrateCommand)
     .command(deployCommand)
     .command(destroyCommand)
     .command(devCommand)
@@ -202,12 +211,14 @@ async function runYargs() {
     .command(experimentalCommand)
     .command(generateCommand)
     .command(infoCommand)
+    .command(jobsCommand)
     .command(lintCommand)
     .command(prerenderCommand)
     .command(prismaCommand)
     .command(recordCommand)
     .command(serveCommand)
     .command(setupCommand)
+    .command(studioCommand)
     .command(testCommand)
     .command(tstojsCommand)
     .command(typeCheckCommand)
@@ -216,11 +227,25 @@ async function runYargs() {
   // Load any CLI plugins
   await loadPlugins(yarg)
 
+  // We explicitly set the version here so that it's always available
+  const pkgJson = require('../package.json')
+  yarg.version(pkgJson['version'])
+
   // Run
-  await yarg.parse(process.argv.slice(2), {}, (_err, _argv, output) => {
+  await yarg.parse(process.argv.slice(2), {}, (err, _argv, output) => {
+    // Configuring yargs with `strict` makes it error on unknown args;
+    // here we're signaling that with an exit code.
+    if (err) {
+      process.exitCode = 1
+    }
+
     // Show the output that yargs was going to if there was no callback provided
     if (output) {
-      console.log(output)
+      if (err) {
+        console.error(output)
+      } else {
+        console.log(output)
+      }
     }
   })
 }

@@ -61,14 +61,14 @@ You may be asked to use your 2FA code to verify that you're who you say you are,
 
 Add those to your app's `.env` file (or wherever you're managing your secrets). Note that it's best to have a different OAuth app on GitHub for each environment you deploy to. Consider this one the **dev** app, and you'll create a separate one with a different client ID and secret when you're ready to deploy to production:
 
-```bash title=/.env
+```bash title="/.env"
 GITHUB_OAUTH_CLIENT_ID=41a08ae238b5aee4121d
 GITHUB_OAUTH_CLIENT_SECRET=92e8662e9c562aca8356d45562911542d89450e1
 ```
 
 We also need to denote what data we want permission to read from GitHub once someone authorizes our app. We'll want the user's public info, and probably their email address. That's only two scopes, and we can add those as another ENV var:
 
-```bash title=/.env
+```bash title="/.env"
 GITHUB_OAUTH_CLIENT_ID=41a08ae238b5aee4121d
 GITHUB_OAUTH_CLIENT_SECRET=92e8662e9c562aca8356d45562911542d89450e1
 # highlight-next-line
@@ -79,7 +79,7 @@ If you wanted access to more GitHub data, you can specify [additional scopes](ht
 
 One more ENV var, this is the same callback URL we told GitHub about. This is used in the link in the **Login with GitHub** button and gives GitHub another chance to verify that you're who you say you are: you're proving that you know where you're supposed to redirect back to:
 
-```bash title=/.env
+```bash title="/.env"
 GITHUB_OAUTH_CLIENT_ID=41a08ae238b5aee4121d
 GITHUB_OAUTH_CLIENT_SECRET=92e8662e9c562aca8356d45562911542d89450e1
 GITHUB_OAUTH_SCOPES="read:user user:email"
@@ -91,7 +91,7 @@ GITHUB_OAUTH_REDIRECT_URI="http://localhost:8910/.redwood/functions/oauth/callba
 
 This part is pretty easy, we're just going to add a link/button to go directly to GitHub to begin the OAuth process:
 
-```jsx title=/web/src/pages/LoginPage/LoginPage.jsx
+```jsx title="/web/src/pages/LoginPage/LoginPage.jsx"
 <a href={`https://github.com/login/oauth/authorize?client_id=${
     process.env.GITHUB_OAUTH_CLIENT_ID
   }&redirect_uri=${
@@ -110,7 +110,7 @@ You can put this same link on your signup page as well, since using the OAuth fl
 
 We're using several of our new ENV vars here, and need to tell Redwood to make them available to the web side during the build process. Add them to the `includeEnvironmentVariables` key in `redwood.toml`:
 
-```toml title=/redwood.toml
+```toml title="/redwood.toml"
 [web]
   title = "Redwood App"
   port = "${WEB_DEV_PORT:8910}"
@@ -133,7 +133,7 @@ Go ahead and click it, and you should be taken to GitHub to authorize your GitHu
 
 ![GitHub Oauth Access Page](https://user-images.githubusercontent.com/300/245899872-8ddd7e69-dbfa-4544-ab6f-78fd4ff02da8.png)
 
-:::caution
+:::warning
 
 If you get an error here that says "The redirect_uri MUST match the registered callback URL for this application" verify that the redirect URL you entered on GitHub and the one you put into the `GITHUB_OAUTH_REDIRECT_URL` ENV var are identical!
 
@@ -143,7 +143,7 @@ Click **authorize** and you should end up seeing some JSON, and an error:
 
 ![/oauth function not found](https://user-images.githubusercontent.com/300/245900327-b21a178e-5539-4c6d-a5d6-9bb736100940.png)
 
-That's coming from our app because we haven't created the `oauth` function that GitHub redirects to. But you'll see a `code` in the URL, which means GitHub is  happy with our flow so far. Now we need to trade that `code` for an `access_token`. We'll do that in our `/oauth` function.
+That's coming from our app because we haven't created the `oauth` function that GitHub redirects to. But you'll see a `code` in the URL, which means GitHub is happy with our flow so far. Now we need to trade that `code` for an `access_token`. We'll do that in our `/oauth` function.
 
 :::info
 This nicely formatted JSON comes from the [JSON Viewer](https://chrome.google.com/webstore/detail/json-viewer/gbmdgpbipfallnflgajpaliibnhdgobh) Chrome extension.
@@ -165,9 +165,9 @@ Now let's start filling out this function with the code we need to get the `acce
 
 ### Fetching the `access_token`
 
-We told GitHub to redirect to `/oauth/callback` which *appears* like it would be a subdirectory, or child route of our `oauth` function, but in reality everything after `/oauth` just gets shoved into an `event.path` variable that we'll need to inspect to make sure it has the proper parts (like `/callback`). We can  do that in the `hander()`:
+We told GitHub to redirect to `/oauth/callback` which _appears_ like it would be a subdirectory, or child route of our `oauth` function, but in reality everything after `/oauth` just gets shoved into an `event.path` variable that we'll need to inspect to make sure it has the proper parts (like `/callback`). We can do that in the `hander()`:
 
-```js title=/api/src/functions/oauth/oauth.js
+```js title="/api/src/functions/oauth/oauth.js"
 export const handler = async (event, _context) => {
   switch (event.path) {
     case '/oauth/callback':
@@ -189,7 +189,7 @@ The `callback()` function is where we'll actually define the rest of our flow. W
 
 Now we need to make a request to GitHub to trade the `code` for an `access_token`. This is handled by a `fetch`:
 
-```js title=/api/src/functions/oauth/oauth.js
+```js title="/api/src/functions/oauth/oauth.js"
 const callback = async (event) => {
   // highlight-start
   const { code } = event.queryStringParameters
@@ -215,7 +215,7 @@ const callback = async (event) => {
   }
 
   return {
-    body: JSON.stringify({ access_token, scope, error })
+    body: JSON.stringify({ access_token, scope, error }),
   }
   // highlight-end
 }
@@ -241,7 +241,7 @@ To keep things straight in our heads, let's call our local user `user` and the G
 
 Let's make the API call to GitHub's user info endpoint and dump the result to the browser:
 
-```js title=/api/src/functions/oauth/oauth.js
+```js title="/api/src/functions/oauth/oauth.js"
 const callback = async (event) => {
   const { code } = event.queryStringParameters
 
@@ -269,7 +269,7 @@ const callback = async (event) => {
   try {
     const providerUser = await getProviderUser(access_token)
     return {
-      body: JSON.stringify(providerUser)
+      body: JSON.stringify(providerUser),
     }
   } catch (e) {
     return { statuscode: 500, body: e.message }
@@ -305,8 +305,8 @@ We've got a bunch of user data that we can use to create a `User` in our own dat
 
 1. Keep our `User` model as-is and create the user in our local database. When the user logs in again, look them by their email address stored in GitHub. **Cons:** If the user changes their email in GitHub we won't be able to find them the next time they log in, and we would create a new user.
 2. Keep the `User` model as-is but create the user with the same `id` as the one we get from GitHub. **Cons:** If we keep username/password login, we would need to create new users with an `id` that won't ever clash with the ones from GitHub.
-2. Add a column to `User` like `githubId` that stores the GitHub `id` so that we can find the user again the next time they come to login. **Cons:** If we add more providers in the future we'll need to keep adding new `*Id` columns for each.
-3. Create a new one-to-many relationship model that stores the GitHub `id` as a single row, tied to the `userId` of the `User` table, and a new row for each ID of any future providers. **Cons:** More complex data structure.
+3. Add a column to `User` like `githubId` that stores the GitHub `id` so that we can find the user again the next time they come to login. **Cons:** If we add more providers in the future we'll need to keep adding new `*Id` columns for each.
+4. Create a new one-to-many relationship model that stores the GitHub `id` as a single row, tied to the `userId` of the `User` table, and a new row for each ID of any future providers. **Cons:** More complex data structure.
 
 Option #4 will be the most flexible going forward if we ever decide to add more OAuth providers. And if my experience is any indication, everyone always wants more login providers.
 
@@ -330,7 +330,7 @@ For now `provider` will always be `github` and the `uid` will be the GitHub's un
 
 Here's the `Identity` model definition:
 
-```prisma title=/api/db/schema.prisma
+```prisma title="/api/db/schema.prisma"
 model Identity {
   id                  Int       @id @default(autoincrement())
   provider            String
@@ -350,15 +350,15 @@ model Identity {
 
 We're also storing the `accessToken` and `scope` that we got back from the last time we retrived them from GitHub, as well as a timestamp for the last time the user logged in. Storing the `scope` is useful because if you ever change them, you may want to notify users that have the previous scope definition to re-login so the new scopes can be authorized.
 
-::: caution
+:::caution
 
 There's no GraphQL SDL tied to the Identity table, so it is not accessible via our API. But, if you ever did create an SDL and service, be sure that `accessToken` is not in the list of fields exposed publicly!
 
 :::
 
-We'll need to add an `identities` relation to the `User` model, and make the previously required `hashedPassword` and `salt` fields optional (since users may want to *only* authenticate via GitHub, they'll never get to enter a password):
+We'll need to add an `identities` relation to the `User` model, and make the previously required `hashedPassword` and `salt` fields optional (since users may want to _only_ authenticate via GitHub, they'll never get to enter a password):
 
-```prisma title=/api/db/schema.prisma
+```prisma title="/api/db/schema.prisma"
 model User {
   id                  Int       @id @default(autoincrement())
   email               String    @unique
@@ -383,13 +383,13 @@ Give it a name like "create identity". That's it for the database. Let's return 
 
 On a successful GitHub OAuth login we'll want to first check and see if a user already exists with the provider info. If so, we can go ahead and log them in. If not, we'll need to create it first, then log them in.
 
-Let's add some code that returns the user if found, otherwise it creates the user *and* returns it, so that the rest of our code doesn't have to care.
+Let's add some code that returns the user if found, otherwise it creates the user _and_ returns it, so that the rest of our code doesn't have to care.
 
 :::info
 Be sure to import `db` at the top of the file if you haven't already!
 :::
 
-```js title=/api/src/functions/oauth/oauth.js
+```js title="/api/src/functions/oauth/oauth.js"
 // highlight-next-line
 import { db } from 'src/lib/db'
 
@@ -484,7 +484,7 @@ const providerUser = await getProviderUser(access_token)
 // highlight-next-line
 const user = await getUser({ providerUser, accessToken: access_token, scope })
 return {
-  body: JSON.stringify(user)
+  body: JSON.stringify(user),
 }
 ```
 
@@ -508,11 +508,11 @@ The `getUser()` function is going to return the user, whether it had to be creat
 ```js
 const findOrCreateUser = async (providerUser) => {
   const identity = await db.identity.findFirst({
-    where: { provider: 'github', uid: providerUser.id.toString() }
+    where: { provider: 'github', uid: providerUser.id.toString() },
   })
 
   if (identity) {
-    const user = await db.user.findUnique({ where: { id: identity.userId }})
+    const user = await db.user.findUnique({ where: { id: identity.userId } })
     return { user, identity }
   }
 
@@ -575,9 +575,11 @@ Setting a cookie in the browser is a matter of returning a `Set-Cookie` header i
 
 Don't forget the new `CryptoJS` import at the top!
 
-```js title=/api/src/functions/oauth/oauth.js
+```js title="/api/src/functions/oauth/oauth.js"
 // highlight-next-line
 import CryptoJS from 'crypto-js'
+import { cookieName } from '@redwoodjs/auth-dbauth-api'
+import { cookieName as cookie } from 'src/lib/auth'
 
 const callback = async (event) => {
   const { code } = event.queryStringParameters
@@ -643,7 +645,8 @@ const secureCookie = (user) => {
     data,
     process.env.SESSION_SECRET
   ).toString()
-
+  //if you're using dbAuth v7.6.2, you have to change the cookie name. You can comment out the line below and make the next line as comment.
+  //return [`${cookieName(cookie)}=${encrypted}`, ...cookieAttrs].join('; ')
   return [`session=${encrypted}`, ...cookieAttrs].join('; ')
 }
 // highlight-end
@@ -659,7 +662,7 @@ Try it out, and as long as you have an indication on your site that a user is lo
 
 Here's the `oauth` function in its entirety:
 
-```jsx title=/api/src/functions/oauth/oauth.js
+```jsx title="/api/src/functions/oauth/oauth.js"
 import CryptoJS from 'crypto-js'
 
 import { db } from 'src/lib/db'
@@ -821,9 +824,9 @@ const LoginPage = () => {
 
   useEffect(() => {
     if (params.error) {
-      toast.error(error)
+      toast.error(params.error)
     }
-  }, [params]
+  }, [params.error])
 
   return (
     <>

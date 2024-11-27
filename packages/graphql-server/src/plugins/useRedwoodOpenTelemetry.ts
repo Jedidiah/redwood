@@ -1,10 +1,12 @@
-import { Plugin, OnExecuteHookResult, isAsyncIterable } from '@envelop/core'
+import type { Plugin, OnExecuteHookResult } from '@envelop/core'
+import { isAsyncIterable } from '@envelop/core'
 import { useOnResolve } from '@envelop/on-resolve'
-import { Attributes, SpanKind } from '@opentelemetry/api'
+import type { Attributes } from '@opentelemetry/api'
+import { SpanKind } from '@opentelemetry/api'
 import * as opentelemetry from '@opentelemetry/api'
 import { print } from 'graphql'
 
-import { RedwoodOpenTelemetryConfig } from 'src/types'
+import type { RedwoodOpenTelemetryConfig } from '../types'
 
 export enum AttributeName {
   EXECUTION_ERROR = 'graphql.execute.error',
@@ -27,7 +29,7 @@ type PluginContext = {
 }
 
 export const useRedwoodOpenTelemetry = (
-  options: RedwoodOpenTelemetryConfig
+  options: RedwoodOpenTelemetryConfig,
 ): Plugin<PluginContext> => {
   const spanKind: SpanKind = SpanKind.SERVER
   const spanAdditionalAttributes: Attributes = {}
@@ -46,7 +48,7 @@ export const useRedwoodOpenTelemetry = (
             ) {
               const ctx = opentelemetry.trace.setSpan(
                 opentelemetry.context.active(),
-                context[tracingSpanSymbol]
+                context[tracingSpanSymbol],
               )
               const { fieldName, returnType, parentType } = info
               return tracer.startActiveSpan(
@@ -72,11 +74,11 @@ export const useRedwoodOpenTelemetry = (
                     }
                     resolverSpan.end()
                   }
-                }
+                },
               )
             }
             return () => {}
-          })
+          }),
         )
       }
     },
@@ -93,7 +95,7 @@ export const useRedwoodOpenTelemetry = (
             ...(options.variables
               ? {
                   [AttributeName.EXECUTION_VARIABLES]: JSON.stringify(
-                    args.variableValues ?? {}
+                    args.variableValues ?? {},
                   ),
                 }
               : {}),
@@ -104,9 +106,9 @@ export const useRedwoodOpenTelemetry = (
             onExecuteDone({ result }) {
               if (isAsyncIterable(result)) {
                 executionSpan.end()
-                // eslint-disable-next-line no-console
+
                 console.warn(
-                  `Plugin "RedwoodOpenTelemetry" encountered an AsyncIterator which is not supported yet, so tracing data is not available for the operation.`
+                  `Plugin "RedwoodOpenTelemetry" encountered an AsyncIterator which is not supported yet, so tracing data is not available for the operation.`,
                 )
                 return
               }
@@ -114,7 +116,7 @@ export const useRedwoodOpenTelemetry = (
               if (result.data && options.result) {
                 executionSpan.setAttribute(
                   AttributeName.EXECUTION_RESULT,
-                  JSON.stringify(result)
+                  JSON.stringify(result),
                 )
               }
 
@@ -136,7 +138,7 @@ export const useRedwoodOpenTelemetry = (
           }
 
           return resultCbs
-        }
+        },
       )
     },
   }

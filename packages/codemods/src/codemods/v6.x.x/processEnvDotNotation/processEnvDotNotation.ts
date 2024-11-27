@@ -1,4 +1,4 @@
-import { FileInfo, API } from 'jscodeshift'
+import type { FileInfo, API } from 'jscodeshift'
 
 export default function transform(file: FileInfo, api: API) {
   const j = api.jscodeshift
@@ -20,7 +20,7 @@ export default function transform(file: FileInfo, api: API) {
       if (j.StringLiteral.check(envVarName)) {
         const dotNotation = j.memberExpression(
           j.memberExpression(j.identifier('process'), j.identifier('env')),
-          j.identifier(envVarName.value)
+          j.identifier(envVarName.value),
         )
         j(path).replaceWith(dotNotation)
       }

@@ -2,13 +2,18 @@ import type { Plugin } from '@envelop/core'
 import { useLiveQuery } from '@envelop/live-query'
 import { mergeSchemas } from '@graphql-tools/schema'
 import { astFromDirective } from '@graphql-tools/utils'
+import { useDeferStream } from '@graphql-yoga/plugin-defer-stream'
+import { useGraphQLSSE } from '@graphql-yoga/plugin-graphql-sse'
 import { createRedisEventTarget } from '@graphql-yoga/redis-event-target'
 import type { CreateRedisEventTargetArgs } from '@graphql-yoga/redis-event-target'
 import type { PubSub } from '@graphql-yoga/subscription'
 import { createPubSub } from '@graphql-yoga/subscription'
 import { GraphQLLiveDirective } from '@n1ru4l/graphql-live-query'
 import { InMemoryLiveQueryStore } from '@n1ru4l/in-memory-live-query-store'
-import { execute as defaultExecute, print } from 'graphql'
+import type { execute as defaultExecute } from 'graphql'
+import { print } from 'graphql'
+
+export { Repeater } from 'graphql-yoga'
 
 /**
  * We want SubscriptionsGlobs type to be an object with this shape:
@@ -29,7 +34,7 @@ export type { PubSub }
 export { createPubSub, InMemoryLiveQueryStore }
 
 export const liveDirectiveTypeDefs = print(
-  astFromDirective(GraphQLLiveDirective)
+  astFromDirective(GraphQLLiveDirective),
 )
 
 export type LiveQueryStorageMechanism =
@@ -58,6 +63,7 @@ export type SubscribeClientType = CreateRedisEventTargetArgs['subscribeClient']
  *
  */
 export type RedwoodRealtimeOptions = {
+  enableDeferStream?: boolean
   liveQueries?: {
     /**
      * @description Redwood Realtime supports in-memory and Redis stores.
@@ -108,7 +114,7 @@ export class RedisLiveQueryStore {
     pub: PublishClientType,
     sub: SubscribeClientType,
     channel: string,
-    liveQueryStore: InMemoryLiveQueryStore
+    liveQueryStore: InMemoryLiveQueryStore,
   ) {
     this.pub = pub
     this.sub = sub
@@ -128,7 +134,7 @@ export class RedisLiveQueryStore {
     })
   }
 
-  async invalidate(identifiers: Array<string> | string) {
+  async invalidate(identifiers: string[] | string) {
     if (typeof identifiers === 'string') {
       identifiers = [identifiers]
     }
@@ -142,40 +148,44 @@ export class RedisLiveQueryStore {
   }
 }
 
+// These are exported to allow access to the store and pubsub outside of graphql execution
+export let liveQueryStore: LiveQueryStorageMechanism | undefined = undefined
+export let pubSub: ReturnType<typeof createPubSub> | undefined = undefined
+
 export const useRedwoodRealtime = (options: RedwoodRealtimeOptions): Plugin => {
   let liveQueriesEnabled = false
   let subscriptionsEnabled = false
 
   let liveQueryPlugin = {} as Plugin
-  let liveQueryStorageMechanism = {} as LiveQueryStorageMechanism
   const inMemoryLiveQueryStore = new InMemoryLiveQueryStore()
 
-  let pubSub = {} as ReturnType<typeof createPubSub>
+  liveQueryStore = {} as LiveQueryStorageMechanism
+  pubSub = {} as ReturnType<typeof createPubSub>
 
   /**
    * This symbol is added to the schema extensions for checking whether the live query was added to the schema only once.
    */
   const wasLiveQueryAdded = Symbol.for('useRedwoodRealtime.wasLiveQueryAdded')
 
-  if (options.liveQueries && options.liveQueries.store) {
+  if (options.liveQueries?.store) {
     if (options.liveQueries.store === 'in-memory') {
       liveQueriesEnabled = true
 
-      liveQueryStorageMechanism = inMemoryLiveQueryStore
+      liveQueryStore = inMemoryLiveQueryStore
       liveQueryPlugin = useLiveQuery({
-        liveQueryStore: liveQueryStorageMechanism,
+        liveQueryStore,
       })
     } else if (options.liveQueries.store.redis) {
       liveQueriesEnabled = true
 
-      liveQueryStorageMechanism = new RedisLiveQueryStore(
+      liveQueryStore = new RedisLiveQueryStore(
         options.liveQueries.store.redis.publishClient,
         options.liveQueries.store.redis.subscribeClient,
         options.liveQueries.store.redis.channel || 'live-query-invalidations',
-        inMemoryLiveQueryStore
+        inMemoryLiveQueryStore,
       ) as unknown as InMemoryLiveQueryStore
       liveQueryPlugin = useLiveQuery({
-        liveQueryStore: liveQueryStorageMechanism,
+        liveQueryStore,
       })
     } else {
       throw new Error('Invalid live query store configuration.')
@@ -223,11 +233,17 @@ export const useRedwoodRealtime = (options: RedwoodRealtimeOptions): Plugin => {
       if (liveQueriesEnabled) {
         addPlugin(liveQueryPlugin)
       }
+      if (subscriptionsEnabled) {
+        addPlugin(useGraphQLSSE() as Plugin<object>)
+      }
+      if (options.enableDeferStream) {
+        addPlugin(useDeferStream() as Plugin<object>)
+      }
     },
     onContextBuilding() {
       return ({ extendContext }) => {
         extendContext({
-          liveQueryStore: liveQueriesEnabled && liveQueryStorageMechanism,
+          liveQueryStore: liveQueriesEnabled && liveQueryStore,
           pubSub: subscriptionsEnabled && pubSub,
         })
       }

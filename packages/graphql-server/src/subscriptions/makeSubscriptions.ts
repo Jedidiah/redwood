@@ -1,4 +1,4 @@
-import { DocumentNode } from 'graphql'
+import type { DocumentNode } from 'graphql'
 /**
  * We want SubscriptionsGlobs type to be an object with this shape:
  *
@@ -17,7 +17,7 @@ export type RedwoodSubscription = {
 }
 
 export const makeSubscriptions = (
-  SubscriptionGlobs: SubscriptionGlobImports
+  SubscriptionGlobs: SubscriptionGlobImports,
 ): RedwoodSubscription[] => {
   return Object.entries(SubscriptionGlobs).flatMap(
     ([importedGlobName, exports]) => {
@@ -35,6 +35,6 @@ export const makeSubscriptions = (
       } as RedwoodSubscription
 
       return [subscription]
-    }
+    },
   )
 }
